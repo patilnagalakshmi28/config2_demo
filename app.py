@@ -8,12 +8,15 @@ from glide import GlideClusterClientConfiguration, NodeAddress, GlideClusterClie
 dynamodb = boto3.resource('dynamodb')
 table = dynamodb.Table('config_table')
 
-# Valkey/Redis setup (async client)
+# Environment variables for Valkey/Redis host and port
 valkey_host = os.environ.get('VALKEY_HOST')
 valkey_port = int(os.environ.get('VALKEY_PORT', 6379))
 
 async def get_valkey_client():
-    client = GlideClusterClient(host=valkey_host, port=valkey_port)
+    # Create config with NodeAddress list and create client asynchronously
+    addresses = [NodeAddress(valkey_host, valkey_port)]
+    config = GlideClusterClientConfiguration(addresses)
+    client = await GlideClusterClient.create(config)
     return client
 
 def lambda_handler(event, context):
@@ -71,6 +74,7 @@ async def handle_request(event):
             item = response.get('Item')
 
             if item:
+                # Cache the value in Redis for next time
                 await client.set(key, json.dumps(item['value']))
                 return {
                     "statusCode": 200,
@@ -94,7 +98,7 @@ async def handle_request(event):
                     "body": json.dumps({"message": "config_key and config_value required"})
                 }
 
-            # Update each nested field in the config_value map
+            # Update nested fields in DynamoDB item
             update_expression = "SET "
             expression_attribute_names = {"#v": "value"}
             expression_attribute_values = {}
@@ -114,7 +118,7 @@ async def handle_request(event):
                 ExpressionAttributeValues=expression_attribute_values
             )
 
-            # Also update Redis
+            # Also update Redis cache
             existing_val = await client.get(config_key)
             if existing_val:
                 existing_json = json.loads(existing_val)
