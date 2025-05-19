@@ -1,7 +1,7 @@
 FROM public.ecr.aws/lambda/python:3.11
 
 # Install valkey client
-RUN pip install valkey-glide
+RUN pip install --no-cache-dir valkey-glide
 
 # Copy code
 COPY app.py ${LAMBDA_TASK_ROOT}

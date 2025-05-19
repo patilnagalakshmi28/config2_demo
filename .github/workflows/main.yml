@@ -31,7 +31,7 @@ jobs:
         IMAGE_URI="$ACCOUNT_ID.dkr.ecr.$REGION.amazonaws.com/$REPO:latest"
 
         # Build and push the image
-        docker build -t $IMAGE_URI .
+        docker build --no-cache -t $IMAGE_URI .
         docker push $IMAGE_URI
 
     - name: Get image digest from ECR
