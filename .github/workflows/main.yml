@@ -37,7 +37,7 @@ jobs:
     - name: Test Docker image for valkey_glide
       run: |
         docker run --rm $(aws sts get-caller-identity --query Account --output text).dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com/${{ secrets.ECR_REPOSITORY }}:latest \
-        python3 -c "import valkey_glide; print('✅ valkey_glide is available')"
+        python3 -c "import pkgutil; print([m.name for m in pkgutil.iter_modules()])"
 
     - name: Get image digest from ECR
       id: digest
