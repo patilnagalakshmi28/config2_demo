@@ -2,7 +2,7 @@ import json
 import boto3
 import os
 import asyncio
-from valkey_glide import Glide
+from glide import GlideClusterClientConfiguration, NodeAddress, GlideClusterClient
 
 # DynamoDB setup
 dynamodb = boto3.resource('dynamodb')
@@ -13,7 +13,7 @@ valkey_host = os.environ.get('VALKEY_HOST')
 valkey_port = int(os.environ.get('VALKEY_PORT', 6379))
 
 async def get_valkey_client():
-    client = Glide(host=valkey_host, port=valkey_port)
+    client = GlideClusterClient(host=valkey_host, port=valkey_port)
     return client
 
 def lambda_handler(event, context):
