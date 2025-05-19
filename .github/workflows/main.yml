@@ -1,0 +1,54 @@
+name: Deploy to Lambda via ECR
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout source code
+      uses: actions/checkout@v3
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v2
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ secrets.AWS_REGION }}
+
+    - name: Login to Amazon ECR
+      uses: aws-actions/amazon-ecr-login@v2
+
+    - name: Build and push Docker image to ECR
+      run: |
+        ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+        REGION=${{ secrets.AWS_REGION }}
+        REPO=${{ secrets.ECR_REPOSITORY }}
+        IMAGE_URI="$ACCOUNT_ID.dkr.ecr.$REGION.amazonaws.com/$REPO:latest"
+
+        # Build and push the image
+        docker build -t $IMAGE_URI .
+        docker push $IMAGE_URI
+
+    - name: Get image digest from ECR
+      id: digest
+      run: |
+        REGION=${{ secrets.AWS_REGION }}
+        REPO=${{ secrets.ECR_REPOSITORY }}
+        DIGEST=$(aws ecr describe-images \
+          --repository-name $REPO \
+          --query 'sort_by(imageDetails,& imagePushedAt)[-1].imageDigest' \
+          --output text)
+        ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+        IMAGE_URI="$ACCOUNT_ID.dkr.ecr.$REGION.amazonaws.com/$REPO@$DIGEST"
+        echo "IMAGE_URI=$IMAGE_URI" >> $GITHUB_ENV
+
+    - name: Update Lambda function to use new image
+      run: |
+        aws lambda update-function-code \
+          --function-name ${{ secrets.LAMBDA_FUNCTION_NAME }} \
+          --image-uri ${{ env.IMAGE_URI }}
