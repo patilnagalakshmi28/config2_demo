@@ -1,11 +1,11 @@
 FROM public.ecr.aws/lambda/python:3.11
 
-# Install valkey-glide
-RUN pip install --no-cache-dir valkey-glide && \
-    python3 -c "import pkgutil; print([m.name for m in pkgutil.iter_modules()])"
+# Install valkey-glide and dependencies
+RUN pip install --no-cache-dir valkey-glide boto3 && \
+    python3 -c "from glide import Glide; print('✅ glide module imported successfully')"
 
-# Copy your code
-COPY app.py ${LAMBDA_TASK_ROOT}
+# Copy your Lambda function code into the Lambda task root directory
+COPY app.py ${LAMBDA_TASK_ROOT}/
 
-# Set the Lambda handler
+# Set the Lambda handler (module.function)
 CMD ["app.lambda_handler"]

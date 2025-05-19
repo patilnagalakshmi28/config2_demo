@@ -23,23 +23,15 @@ jobs:
     - name: Login to Amazon ECR
       uses: aws-actions/amazon-ecr-login@v2
 
-    - name: Build, verify, and push Docker image to ECR
+    - name: Build and push Docker image to ECR
       run: |
         ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
         REGION=${{ secrets.AWS_REGION }}
         REPO=${{ secrets.ECR_REPOSITORY }}
         IMAGE_URI="$ACCOUNT_ID.dkr.ecr.$REGION.amazonaws.com/$REPO:latest"
 
-        echo "🔧 Building Docker image..."
-        docker build --no-cache -t $IMAGE_URI .
-
-        echo "🧪 Testing image for valkey_glide import..."
-        docker run --rm $IMAGE_URI python3 -c "import valkey_glide; print('✅ valkey_glide is available')"
-
-        echo "🔍 Listing all Python modules inside Docker image..."
-        docker run --rm $IMAGE_URI python3 -c "import pkgutil; print([m.name for m in pkgutil.iter_modules()])"
-
-        echo "📤 Pushing Docker image to ECR..."
+        # Build and push the image
+        docker build -t $IMAGE_URI .
         docker push $IMAGE_URI
 
     - name: Get image digest from ECR
@@ -55,9 +47,8 @@ jobs:
         IMAGE_URI="$ACCOUNT_ID.dkr.ecr.$REGION.amazonaws.com/$REPO@$DIGEST"
         echo "IMAGE_URI=$IMAGE_URI" >> $GITHUB_ENV
 
-    - name: Update Lambda function with new image
+    - name: Update Lambda function to use new image
       run: |
-        echo "🚀 Updating Lambda function..."
         aws lambda update-function-code \
           --function-name ${{ secrets.LAMBDA_FUNCTION_NAME }} \
           --image-uri ${{ env.IMAGE_URI }}
