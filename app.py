@@ -10,7 +10,7 @@ table = dynamodb.Table('config_table')
 
 # Environment variables for Valkey/Redis host and port
 valkey_host = os.environ.get('VALKEY_HOST')
-valkey_port = int(os.environ.get('VALKEY_PORT', 6379))
+valkey_port = int(os.environ.get('VALKEY_PORT', 6380))
 
 async def get_valkey_client():
     # Create config with NodeAddress list and create client asynchronously
