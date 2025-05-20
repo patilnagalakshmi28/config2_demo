@@ -1,8 +1,6 @@
-import asyncio
 import json
-import logging
-import os
-
+import boto3
+import asyncio
 from glide import (
     GlideClusterClient,
     GlideClusterClientConfiguration,
@@ -15,155 +13,212 @@ from glide import (
     ClosingError
 )
 
-# Setup logging
-logging.basicConfig(format="%(asctime)s [%(levelname)s] %(message)s", level=logging.INFO)
-logger = logging.getLogger(__name__)
+# DynamoDB Setup
+dynamodb = boto3.resource('dynamodb')
+table = dynamodb.Table('config_table')
 
-# Valkey Config from Environment
-VALKEY_HOST = os.getenv("VALKEY_HOST", "config-valkey-vfeb3i.serverless.use1.cache.amazonaws.com")
-VALKEY_PORT = 6379
+# Valkey Configuration
+VALKEY_HOST = 'your-valkey-host'  # Replace with your Valkey host
+VALKEY_PORT = 6379  # Typically Redis uses 6379
 USE_TLS = True
 
-# Enable Glide internal logging
 Logger.set_logger_config(LogLevel.INFO)
 
-# ------------------- Valkey Helpers ------------------- #
+# Valkey Helper Functions
 
-async def store_to_valkey(config_key: str, config_value: str):
+async def set_valkey(config_key, config_value_str):
     config = GlideClusterClientConfiguration(
         addresses=[NodeAddress(VALKEY_HOST, VALKEY_PORT)],
         use_tls=USE_TLS
     )
     client = None
-
     try:
-        logger.info("Connecting to Valkey...")
         client = await GlideClusterClient.create(config)
-        logger.info("Connected to Valkey")
-
-        await client.set(config_key, config_value)
-        logger.info(f"Stored key: {config_key}")
+        await client.set(config_key, config_value_str)
         return True
-    except (TimeoutError, RequestError, ConnectionError, ClosingError) as e:
-        logger.error(f"Valkey Error: {e}")
+    except Exception as e:
+        print(f"Valkey set error: {e}")
         return False
     finally:
         if client:
             try:
                 await client.close()
-                logger.info("Closed Valkey client")
-            except ClosingError as e:
-                logger.error(f"Error closing client: {e}")
+            except Exception:
+                pass
 
-async def get_from_valkey(config_key: str):
+async def get_valkey(config_key):
     config = GlideClusterClientConfiguration(
         addresses=[NodeAddress(VALKEY_HOST, VALKEY_PORT)],
         use_tls=USE_TLS
     )
     client = None
-
     try:
-        logger.info(f"Fetching key '{config_key}' from Valkey...")
         client = await GlideClusterClient.create(config)
-
-        value = await client.get(config_key)
-        if value is None:
-            return None
-
-        if isinstance(value, bytes):
-            return value.decode("utf-8")
-        return str(value)
-    except (TimeoutError, RequestError, ConnectionError, ClosingError) as e:
-        logger.error(f"Valkey GET error: {e}")
+        val = await client.get(config_key)
+        if val:
+            return val.decode("utf-8") if isinstance(val, bytes) else str(val)
+        return None
+    except Exception as e:
+        print(f"Valkey get error: {e}")
         return None
     finally:
         if client:
             try:
                 await client.close()
-                logger.info("Closed Valkey client after GET")
-            except ClosingError as e:
-                logger.error(f"Error closing client: {e}")
+            except Exception:
+                pass
 
-# ------------------- Lambda Handler ------------------- #
+# Lambda Handler Function
 
 def lambda_handler(event, context):
-    try:
-        method = event["httpMethod"]
+    method = event['httpMethod']
 
-        if method == "POST":
-            return handle_store_or_update(event, action="create")
+    # POST - Store config_key and config_value
+    if method == 'POST':
+        return handle_store(event)
 
-        elif method == "PATCH":
-            return handle_store_or_update(event, action="update")
+    # GET - Retrieve value by config_key
+    elif method == 'GET':
+        return handle_get(event)
 
-        elif method == "GET":
-            query = event.get("queryStringParameters", {})
-            config_key = query.get("config_key")
+    # PATCH - Update value for existing config_key
+    elif method == 'PATCH':
+        return handle_update(event)
 
-            if not config_key:
-                return {
-                    "statusCode": 400,
-                    "body": json.dumps({"message": "Missing 'config_key' in query parameters"})
-                }
+    # Unsupported method
+    else:
+        return {
+            "statusCode": 405,
+            "body": json.dumps({"error": "Method Not Allowed"})
+        }
 
-            config_value_str = asyncio.run(get_from_valkey(config_key))
+# POST - Store data in DynamoDB and Valkey
+def handle_store(event):
+    body = json.loads(event.get('body', '{}'))
+    config_key = body.get('config_key')
+    config_value = body.get('config_value')
 
-            if config_value_str is None or config_value_str.strip() == "":
-                return {
-                    "statusCode": 404,
-                    "body": json.dumps({"message": f"Key '{config_key}' not found in Valkey"})
-                }
+    if not config_key or not config_value:
+        return {
+            "statusCode": 400,
+            "body": json.dumps({"message": "config_key and config_value required"})
+        }
 
-            try:
-                config_value_obj = json.loads(config_value_str)
-            except Exception as e:
-                logger.warning(f"Failed to parse value as JSON: {e}")
-                config_value_obj = config_value_str  # Fallback to raw string
+    # Store in DynamoDB
+    table.put_item(Item={
+        'key': config_key,
+        'value': config_value
+    })
 
+    # Store in Valkey (as cache)
+    config_value_str = json.dumps(config_value)  # Convert to string for Valkey storage
+    success_valkey = asyncio.run(set_valkey(config_key, config_value_str))
+
+    if success_valkey:
+        return {
+            "statusCode": 200,
+            "body": json.dumps({"message": "Stored in DynamoDB and Valkey"})
+        }
+    else:
+        return {
+            "statusCode": 500,
+            "body": json.dumps({"message": "Failed to store in Valkey"})
+        }
+
+# GET - Retrieve data from Valkey (Cache), if not found in Valkey, fall back to DynamoDB
+def handle_get(event):
+    params = event.get('queryStringParameters', {})
+    if not params or 'key' not in params:
+        return {
+            "statusCode": 400,
+            "body": json.dumps({"message": "Missing query parameter 'key'"})
+        }
+
+    key = params['key']
+
+    # Try Valkey first (Cache)
+    val = asyncio.run(get_valkey(key))
+    if val:
+        try:
             return {
                 "statusCode": 200,
                 "body": json.dumps({
-                    "config_key": config_key,
-                    "config_value": config_value_obj
+                    "config_key": key,
+                    "config_value": json.loads(val)  # Assuming val is a JSON string
+                })
+            }
+        except Exception:
+            return {
+                "statusCode": 200,
+                "body": json.dumps({
+                    "config_key": key,
+                    "config_value": val
                 })
             }
 
-        else:
-            return {
-                "statusCode": 405,
-                "body": json.dumps({"message": "Method not allowed"})
-            }
+    # Fallback to DynamoDB
+    response = table.get_item(Key={'key': key})
+    item = response.get('Item')
 
-    except Exception as e:
-        logger.exception("Unhandled exception in Lambda")
+    if item:
+        # Cache it in Valkey for future requests
+        config_value_str = json.dumps(item['value'])
+        asyncio.run(set_valkey(key, config_value_str))
+        
         return {
-            "statusCode": 500,
-            "body": json.dumps({"message": str(e)})
+            "statusCode": 200,
+            "body": json.dumps(item)
+        }
+    else:
+        return {
+            "statusCode": 404,
+            "body": json.dumps({"error": "Not found"})
         }
 
-# ------------------- Shared POST/PATCH Handler ------------------- #
+# PATCH - Update data in DynamoDB and Valkey
+def handle_update(event):
+    body = json.loads(event.get('body', '{}'))
+    config_key = body.get('config_key')
+    updated_values = body.get('config_value')
 
-def handle_store_or_update(event, action="create"):
-    body = json.loads(event.get("body", "{}"))
-
-    config_key = body.get("config_key", {}).get("S")
-    config_value_map = body.get("config_value", {}).get("M")
-
-    if not config_key or not config_value_map:
+    if not config_key or not updated_values:
         return {
             "statusCode": 400,
-            "body": json.dumps({"message": "Missing or malformed 'config_key' or 'config_value'"})
+            "body": json.dumps({"message": "config_key and config_value required"})
         }
 
-    # Flatten the DynamoDB-style input into a simple dictionary
-    flat_value = {k: v.get("S") for k, v in config_value_map.items()}
-    config_value_str = json.dumps(flat_value)
+    # Update DynamoDB
+    update_expression = "SET "
+    expression_attribute_names = {}
+    expression_attribute_values = {}
 
-    success = asyncio.run(store_to_valkey(config_key, config_value_str))
+    for i, (k, v) in enumerate(updated_values.items()):
+        path = f"#v.{k}"
+        value_key = f":val{i}"
+        expression_attribute_names[f"#v"] = "value"  # Top-level map
+        expression_attribute_values[value_key] = v
+        update_expression += f"{path} = {value_key}, "
 
-    return {
-        "statusCode": 200 if success else 500,
-        "body": json.dumps({
-            "message": f"{'Updated' if action == 'update' else 'Stored'} successfully in Valkey" if success else f"Failed to {action} value in Valkey"
-        })
-    }
+    update_expression = update_expression.rstrip(", ")
+
+    table.update_item(
+        Key={'key': config_key},
+        UpdateExpression=update_expression,
+        ExpressionAttributeNames=expression_attribute_names,
+        ExpressionAttributeValues=expression_attribute_values
+    )
+
+    # Update Valkey
+    config_value_str = json.dumps(updated_values)  # Convert to string for Valkey storage
+    success_valkey = asyncio.run(set_valkey(config_key, config_value_str))
+
+    if success_valkey:
+        return {
+            "statusCode": 200,
+            "body": json.dumps({'message': f'Updated {config_key} successfully in DynamoDB and Valkey'})
+        }
+    else:
+        return {
+            "statusCode": 500,
+            "body": json.dumps({"message": "Failed to update in Valkey"})
+        }
