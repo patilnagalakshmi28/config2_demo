@@ -2,8 +2,6 @@ import json
 import os
 import asyncio
 import boto3
-from concurrent.futures import ThreadPoolExecutor
-
 from glide import (
     GlideClusterClient,
     GlideClusterClientConfiguration,
@@ -24,14 +22,14 @@ table = dynamodb.Table('config_table')
 Logger.set_logger_config(LogLevel.INFO)
 
 # DynamoDB Operations
-def write_to_dynamodb(config_key, config_value):
-    table.put_item(Item={'key': config_key, 'value': config_value})
+async def write_to_dynamodb(config_key, config_value):
+    await asyncio.to_thread(table.put_item, Item={'key': config_key, 'value': config_value})
 
-def read_from_dynamodb(config_key):
-    response = table.get_item(Key={'key': config_key})
+async def read_from_dynamodb(config_key):
+    response = await asyncio.to_thread(table.get_item, Key={'key': config_key})
     return response.get('Item')
 
-def update_dynamodb(config_key, updated_values):
+async def update_dynamodb(config_key, updated_values):
     update_expression = "SET "
     expression_attribute_names = {"#v": "value"}
     expression_attribute_values = {}
@@ -42,12 +40,11 @@ def update_dynamodb(config_key, updated_values):
 
     update_expression = update_expression.rstrip(", ")
 
-    table.update_item(
-        Key={'key': config_key},
-        UpdateExpression=update_expression,
-        ExpressionAttributeNames=expression_attribute_names,
-        ExpressionAttributeValues=expression_attribute_values
-    )
+    await asyncio.to_thread(table.update_item,
+                             Key={'key': config_key},
+                             UpdateExpression=update_expression,
+                             ExpressionAttributeNames=expression_attribute_names,
+                             ExpressionAttributeValues=expression_attribute_values)
 
 # Glide (Valkey) Client setup
 async def get_valkey_client():
@@ -63,7 +60,6 @@ async def get_valkey_client():
 async def handler(event, context):
     method = event['httpMethod']
     loop = asyncio.get_event_loop()
-    executor = ThreadPoolExecutor()
 
     if method == 'POST':
         body = json.loads(event.get('body', '{}'))
@@ -76,12 +72,13 @@ async def handler(event, context):
                 "body": json.dumps({"message": "config_key and config_value required"})
             }
 
-        # Write to DynamoDB (non-blocking)
-        await loop.run_in_executor(executor, write_to_dynamodb, config_key, config_value)
-
-        # Write to Valkey
+        # Run both DynamoDB and Valkey writes in parallel
         client = await get_valkey_client()
-        await client.set(config_key, json.dumps(config_value))
+        await asyncio.gather(
+            loop.run_in_executor(None, write_to_dynamodb, config_key, config_value),
+            client.set(config_key, json.dumps(config_value)),
+            return_exceptions=True
+        )
         await client.close()
 
         return {
@@ -99,7 +96,7 @@ async def handler(event, context):
                 "body": json.dumps({"message": "Missing query parameter 'key'"})
             }
 
-        # Try Valkey
+        # Try Valkey first
         client = await get_valkey_client()
         val = await client.get(config_key)
         await client.close()
@@ -114,7 +111,7 @@ async def handler(event, context):
             }
 
         # Fallback to DynamoDB
-        item = await loop.run_in_executor(executor, read_from_dynamodb, config_key)
+        item = await read_from_dynamodb(config_key)
 
         if item:
             # Cache back into Valkey
@@ -143,12 +140,13 @@ async def handler(event, context):
                 "body": json.dumps({"message": "config_key and config_value required"})
             }
 
-        # Update DynamoDB
-        await loop.run_in_executor(executor, update_dynamodb, config_key, updated_values)
-
-        # Update Valkey
+        # Update DynamoDB and Valkey concurrently
         client = await get_valkey_client()
-        await client.set(config_key, json.dumps(updated_values))
+        await asyncio.gather(
+            loop.run_in_executor(None, update_dynamodb, config_key, updated_values),
+            client.set(config_key, json.dumps(updated_values)),
+            return_exceptions=True
+        )
         await client.close()
 
         return {
