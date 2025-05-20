@@ -27,6 +27,14 @@ USE_TLS = True
 # Enable internal Glide logging
 Logger.set_logger_config(LogLevel.INFO)
 
+# Helper function to convert the structured data into a JSON string
+def serialize_config_value(config_value):
+    try:
+        return json.dumps(config_value)
+    except Exception as e:
+        logger.error(f"Error serializing config_value: {e}")
+        return None
+
 async def store_to_valkey(config_key: str, config_value: str):
     config = GlideClusterClientConfiguration(
         addresses=[NodeAddress(VALKEY_HOST, VALKEY_PORT)],
@@ -96,14 +104,20 @@ def lambda_handler(event, context):
             config_key = body.get("config_key")
             config_value = body.get("config_value")
 
-            if not config_key or config_value is None:
+            if not config_key or not config_value:
                 return {
                     "statusCode": 400,
                     "body": json.dumps({"message": "Missing 'config_key' or 'config_value'"})
                 }
 
-            # Serialize config_value to string
-            config_value_str = json.dumps(config_value)
+            # Serialize config_value to JSON string format
+            config_value_str = serialize_config_value(config_value)
+
+            if config_value_str is None:
+                return {
+                    "statusCode": 400,
+                    "body": json.dumps({"message": "Failed to serialize config_value"})
+                }
 
             success = asyncio.run(store_to_valkey(config_key, config_value_str))
 
@@ -138,7 +152,7 @@ def lambda_handler(event, context):
 
             return {
                 "statusCode": 200,
-                "body": json.dumps({"config_key": config_key, "config_value": config_value})
+                "body": json.dumps({"config_key": config_key, "config_value": json.loads(config_value)})
             }
 
         else:
