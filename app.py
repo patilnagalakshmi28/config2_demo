@@ -27,14 +27,6 @@ USE_TLS = True
 # Enable internal Glide logging
 Logger.set_logger_config(LogLevel.INFO)
 
-# Helper function to convert the structured data into a JSON string
-def serialize_config_value(config_value):
-    try:
-        return json.dumps(config_value)
-    except Exception as e:
-        logger.error(f"Error serializing config_value: {e}")
-        return None
-
 async def store_to_valkey(config_key: str, config_value: str):
     config = GlideClusterClientConfiguration(
         addresses=[NodeAddress(VALKEY_HOST, VALKEY_PORT)],
@@ -48,7 +40,7 @@ async def store_to_valkey(config_key: str, config_value: str):
         logger.info("Connected successfully")
 
         result = await client.set(config_key, config_value)
-        logger.info(f"Set config_key='{config_key}' result={result}")
+        logger.info(f"Stored config_key='{config_key}'")
         return True
     except (TimeoutError, RequestError, ConnectionError, ClosingError) as e:
         logger.error(f"Valkey Error: {e}")
@@ -76,12 +68,11 @@ async def get_from_valkey(config_key: str):
         value = await client.get(config_key)
 
         if value:
-            # Decode the bytes value to string
-            value_str = value.decode('utf-8') if isinstance(value, bytes) else value
-            logger.info(f"Got value for config_key='{config_key}': {value_str}")
+            value_str = value.decode("utf-8") if isinstance(value, bytes) else str(value)
+            logger.info(f"Fetched value for config_key='{config_key}'")
             return value_str
         else:
-            logger.info(f"config_key '{config_key}' not found.")
+            logger.info(f"Key '{config_key}' not found.")
             return None
     except (TimeoutError, RequestError, ConnectionError, ClosingError) as e:
         logger.error(f"Valkey Error: {e}")
@@ -99,42 +90,34 @@ def lambda_handler(event, context):
         method = event["httpMethod"]
 
         if method == "POST":
-            # Handle POST request to store data in Valkey
             body = json.loads(event.get("body", "{}"))
-            config_key = body.get("config_key")
-            config_value = body.get("config_value")
 
-            if not config_key or not config_value:
+            # Extract config_key and config_value
+            config_key = body.get("config_key", {}).get("S")
+            config_value_map = body.get("config_value", {}).get("M")
+
+            if not config_key or not config_value_map:
                 return {
                     "statusCode": 400,
-                    "body": json.dumps({"message": "Missing 'config_key' or 'config_value'"})
+                    "body": json.dumps({"message": "Missing or malformed 'config_key' or 'config_value'"})
                 }
 
-            # Serialize config_value to JSON string format
-            config_value_str = serialize_config_value(config_value)
-
-            if config_value_str is None:
-                return {
-                    "statusCode": 400,
-                    "body": json.dumps({"message": "Failed to serialize config_value"})
-                }
+            # Flatten value structure
+            flat_value = {k: v.get("S") for k, v in config_value_map.items()}
+            config_value_str = json.dumps(flat_value)
 
             success = asyncio.run(store_to_valkey(config_key, config_value_str))
 
-            if success:
-                return {
-                    "statusCode": 200,
-                    "body": json.dumps({"message": "Stored successfully in Valkey"})
-                }
-            else:
-                return {
-                    "statusCode": 500,
-                    "body": json.dumps({"message": "Failed to store in Valkey"})
-                }
+            return {
+                "statusCode": 200 if success else 500,
+                "body": json.dumps({
+                    "message": "Stored successfully in Valkey" if success else "Failed to store in Valkey"
+                })
+            }
 
         elif method == "GET":
-            # Handle GET request to fetch data from Valkey using query parameters
-            config_key = event["queryStringParameters"].get("config_key") if event.get("queryStringParameters") else None
+            query = event.get("queryStringParameters", {})
+            config_key = query.get("config_key")
 
             if not config_key:
                 return {
@@ -142,17 +125,26 @@ def lambda_handler(event, context):
                     "body": json.dumps({"message": "Missing 'config_key' in query parameters"})
                 }
 
-            config_value = asyncio.run(get_from_valkey(config_key))
+            config_value_str = asyncio.run(get_from_valkey(config_key))
 
-            if config_value is None:
+            if config_value_str is None:
                 return {
                     "statusCode": 404,
-                    "body": json.dumps({"message": f"config_key '{config_key}' not found in Valkey"})
+                    "body": json.dumps({"message": f"Key '{config_key}' not found in Valkey"})
                 }
+
+            # Convert back to dict if possible
+            try:
+                config_value_obj = json.loads(config_value_str)
+            except Exception:
+                config_value_obj = config_value_str
 
             return {
                 "statusCode": 200,
-                "body": json.dumps({"config_key": config_key, "config_value": json.loads(config_value)})
+                "body": json.dumps({
+                    "config_key": config_key,
+                    "config_value": config_value_obj
+                })
             }
 
         else:
