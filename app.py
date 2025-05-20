@@ -59,8 +59,8 @@ async def get_valkey_client():
     )
     return await GlideClusterClient.create(config)
 
-# Lambda handler
-async def lambda_handler(event, context):
+# Lambda handler function
+async def handler(event, context):
     method = event['httpMethod']
     loop = asyncio.get_event_loop()
     executor = ThreadPoolExecutor()
@@ -160,3 +160,7 @@ async def lambda_handler(event, context):
         "statusCode": 405,
         "body": json.dumps({"message": "Method not allowed"})
     }
+
+# Lambda function entry point
+def lambda_handler(event, context):
+    return asyncio.run(handler(event, context))
