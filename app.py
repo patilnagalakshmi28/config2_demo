@@ -41,29 +41,6 @@ async def read_from_dynamodb(config_key):
         print(f"Error reading from DynamoDB: {e}")
         raise
 
-async def update_dynamodb(config_key, updated_values):
-    try:
-        print(f"Updating DynamoDB: key={config_key}, updated_values={updated_values}")
-        update_expression = "SET "
-        expression_attribute_names = {"#v": "value"}
-        expression_attribute_values = {}
-
-        for i, (k, v) in enumerate(updated_values.items()):
-            update_expression += f"#v.{k} = :val{i}, "
-            expression_attribute_values[f":val{i}"] = v
-
-        update_expression = update_expression.rstrip(", ")
-
-        await asyncio.to_thread(table.update_item,
-                                 Key={'key': config_key},
-                                 UpdateExpression=update_expression,
-                                 ExpressionAttributeNames=expression_attribute_names,
-                                 ExpressionAttributeValues=expression_attribute_values)
-        print(f"Successfully updated {config_key} in DynamoDB")
-    except Exception as e:
-        print(f"Error updating DynamoDB: {e}")
-        raise
-
 # Glide (Valkey) Client setup
 async def get_valkey_client():
     if not VALKEY_HOST:
@@ -93,6 +70,7 @@ async def handler(event, context):
         # Run both DynamoDB and Valkey writes in parallel
         client = await get_valkey_client()
         try:
+            # Writing to DynamoDB and Valkey concurrently
             await asyncio.gather(
                 loop.run_in_executor(None, write_to_dynamodb, config_key, config_value),
                 client.set(config_key, json.dumps(config_value)),
