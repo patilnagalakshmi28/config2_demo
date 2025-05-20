@@ -16,7 +16,7 @@ async def get_valkey_client():
     # Create config with NodeAddress list and create client asynchronously
     print(f"Connecting to Valkey at {valkey_host}:{valkey_port}")
     addresses = [NodeAddress(valkey_host, valkey_port)]
-    config = GlideClusterClientConfiguration(addresses,use_tls=True)
+    config = GlideClusterClientConfiguration(addresses,use_tls=False)
     client = await GlideClusterClient.create(config)
     return client
 
