@@ -18,8 +18,8 @@ dynamodb = boto3.resource('dynamodb')
 table = dynamodb.Table('config_table')
 
 # Valkey Configuration
-VALKEY_HOST = 'your-valkey-host'  # Replace with your Valkey host
-VALKEY_PORT = 6379  # Typically Redis uses 6379
+VALKEY_HOST = 'config-valkey-vfeb3i.serverless.use1.cache.amazonaws.com'
+VALKEY_PORT = 6379 
 USE_TLS = True
 
 Logger.set_logger_config(LogLevel.INFO)
