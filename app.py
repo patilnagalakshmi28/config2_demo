@@ -23,28 +23,46 @@ Logger.set_logger_config(LogLevel.INFO)
 
 # DynamoDB Operations
 async def write_to_dynamodb(config_key, config_value):
-    await asyncio.to_thread(table.put_item, Item={'key': config_key, 'value': config_value})
+    try:
+        print(f"Writing to DynamoDB: key={config_key}, value={config_value}")
+        await asyncio.to_thread(table.put_item, Item={'key': config_key, 'value': config_value})
+        print(f"Successfully wrote {config_key} to DynamoDB")
+    except Exception as e:
+        print(f"Error writing to DynamoDB: {e}")
+        raise
 
 async def read_from_dynamodb(config_key):
-    response = await asyncio.to_thread(table.get_item, Key={'key': config_key})
-    return response.get('Item')
+    try:
+        print(f"Reading from DynamoDB: key={config_key}")
+        response = await asyncio.to_thread(table.get_item, Key={'key': config_key})
+        print(f"Read from DynamoDB response: {response}")
+        return response.get('Item')
+    except Exception as e:
+        print(f"Error reading from DynamoDB: {e}")
+        raise
 
 async def update_dynamodb(config_key, updated_values):
-    update_expression = "SET "
-    expression_attribute_names = {"#v": "value"}
-    expression_attribute_values = {}
+    try:
+        print(f"Updating DynamoDB: key={config_key}, updated_values={updated_values}")
+        update_expression = "SET "
+        expression_attribute_names = {"#v": "value"}
+        expression_attribute_values = {}
 
-    for i, (k, v) in enumerate(updated_values.items()):
-        update_expression += f"#v.{k} = :val{i}, "
-        expression_attribute_values[f":val{i}"] = v
+        for i, (k, v) in enumerate(updated_values.items()):
+            update_expression += f"#v.{k} = :val{i}, "
+            expression_attribute_values[f":val{i}"] = v
 
-    update_expression = update_expression.rstrip(", ")
+        update_expression = update_expression.rstrip(", ")
 
-    await asyncio.to_thread(table.update_item,
-                             Key={'key': config_key},
-                             UpdateExpression=update_expression,
-                             ExpressionAttributeNames=expression_attribute_names,
-                             ExpressionAttributeValues=expression_attribute_values)
+        await asyncio.to_thread(table.update_item,
+                                 Key={'key': config_key},
+                                 UpdateExpression=update_expression,
+                                 ExpressionAttributeNames=expression_attribute_names,
+                                 ExpressionAttributeValues=expression_attribute_values)
+        print(f"Successfully updated {config_key} in DynamoDB")
+    except Exception as e:
+        print(f"Error updating DynamoDB: {e}")
+        raise
 
 # Glide (Valkey) Client setup
 async def get_valkey_client():
@@ -74,12 +92,21 @@ async def handler(event, context):
 
         # Run both DynamoDB and Valkey writes in parallel
         client = await get_valkey_client()
-        await asyncio.gather(
-            loop.run_in_executor(None, write_to_dynamodb, config_key, config_value),
-            client.set(config_key, json.dumps(config_value)),
-            return_exceptions=True
-        )
-        await client.close()
+        try:
+            await asyncio.gather(
+                loop.run_in_executor(None, write_to_dynamodb, config_key, config_value),
+                client.set(config_key, json.dumps(config_value)),
+                return_exceptions=True
+            )
+            print(f"Data for {config_key} written to Valkey and DynamoDB")
+        except Exception as e:
+            print(f"Error during POST operation: {e}")
+            return {
+                "statusCode": 500,
+                "body": json.dumps({"message": f"Error occurred: {str(e)}"})
+            }
+        finally:
+            await client.close()
 
         return {
             "statusCode": 200,
@@ -142,12 +169,21 @@ async def handler(event, context):
 
         # Update DynamoDB and Valkey concurrently
         client = await get_valkey_client()
-        await asyncio.gather(
-            loop.run_in_executor(None, update_dynamodb, config_key, updated_values),
-            client.set(config_key, json.dumps(updated_values)),
-            return_exceptions=True
-        )
-        await client.close()
+        try:
+            await asyncio.gather(
+                loop.run_in_executor(None, update_dynamodb, config_key, updated_values),
+                client.set(config_key, json.dumps(updated_values)),
+                return_exceptions=True
+            )
+            print(f"Data for {config_key} updated in Valkey and DynamoDB")
+        except Exception as e:
+            print(f"Error during PATCH operation: {e}")
+            return {
+                "statusCode": 500,
+                "body": json.dumps({"message": f"Error occurred: {str(e)}"})
+            }
+        finally:
+            await client.close()
 
         return {
             "statusCode": 200,
