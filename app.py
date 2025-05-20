@@ -73,7 +73,7 @@ async def get_valkey(config_key):
 def lambda_handler(event, context):
     method = event['httpMethod']
 
-    # POST - Store config_key and config_value
+    # POST - Store data in DynamoDB and Valkey
     if method == 'POST':
         return handle_store(event)
 
@@ -112,7 +112,10 @@ def handle_store(event):
 
     # Store in Valkey (as cache)
     config_value_str = json.dumps(config_value)  # Convert to string for Valkey storage
-    success_valkey = asyncio.run(set_valkey(config_key, config_value_str))
+    
+    # Run Valkey operation concurrently with DynamoDB
+    loop = asyncio.get_event_loop()
+    success_valkey = loop.run_until_complete(set_valkey(config_key, config_value_str))
 
     if success_valkey:
         return {
@@ -137,7 +140,8 @@ def handle_get(event):
     key = params['key']
 
     # Try Valkey first (Cache)
-    val = asyncio.run(get_valkey(key))
+    loop = asyncio.get_event_loop()
+    val = loop.run_until_complete(get_valkey(key))
     if val:
         try:
             return {
@@ -163,7 +167,7 @@ def handle_get(event):
     if item:
         # Cache it in Valkey for future requests
         config_value_str = json.dumps(item['value'])
-        asyncio.run(set_valkey(key, config_value_str))
+        loop.run_until_complete(set_valkey(key, config_value_str))
         
         return {
             "statusCode": 200,
@@ -210,7 +214,8 @@ def handle_update(event):
 
     # Update Valkey
     config_value_str = json.dumps(updated_values)  # Convert to string for Valkey storage
-    success_valkey = asyncio.run(set_valkey(config_key, config_value_str))
+    loop = asyncio.get_event_loop()
+    success_valkey = loop.run_until_complete(set_valkey(config_key, config_value_str))
 
     if success_valkey:
         return {
