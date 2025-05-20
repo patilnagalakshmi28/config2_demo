@@ -15,19 +15,19 @@ from glide import (
     ClosingError
 )
 
-# Logging setup
+# Setup logging
 logging.basicConfig(format="%(asctime)s [%(levelname)s] %(message)s", level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Valkey config
+# Valkey Config from Environment
 VALKEY_HOST = os.getenv("VALKEY_HOST", "config-valkey-vfeb3i.serverless.use1.cache.amazonaws.com")
 VALKEY_PORT = 6379
 USE_TLS = True
 
-# Enable internal glide logging
+# Enable Glide internal logging
 Logger.set_logger_config(LogLevel.INFO)
 
-# -------------------- Valkey Helpers -------------------- #
+# ------------------- Valkey Helpers ------------------- #
 
 async def store_to_valkey(config_key: str, config_value: str):
     config = GlideClusterClientConfiguration(
@@ -37,15 +37,15 @@ async def store_to_valkey(config_key: str, config_value: str):
     client = None
 
     try:
-        logger.info(f"Connecting to Valkey...")
+        logger.info("Connecting to Valkey...")
         client = await GlideClusterClient.create(config)
-        logger.info("Connected successfully")
+        logger.info("Connected to Valkey")
 
-        result = await client.set(config_key, config_value)
-        logger.info(f"Set config_key='{config_key}' with result={result}")
+        await client.set(config_key, config_value)
+        logger.info(f"Stored key: {config_key}")
         return True
     except (TimeoutError, RequestError, ConnectionError, ClosingError) as e:
-        logger.error(f"Valkey error: {e}")
+        logger.error(f"Valkey Error: {e}")
         return False
     finally:
         if client:
@@ -53,7 +53,7 @@ async def store_to_valkey(config_key: str, config_value: str):
                 await client.close()
                 logger.info("Closed Valkey client")
             except ClosingError as e:
-                logger.error(f"Error closing Valkey client: {e}")
+                logger.error(f"Error closing client: {e}")
 
 async def get_from_valkey(config_key: str):
     config = GlideClusterClientConfiguration(
@@ -63,16 +63,18 @@ async def get_from_valkey(config_key: str):
     client = None
 
     try:
-        logger.info(f"Fetching from Valkey...")
+        logger.info(f"Fetching key '{config_key}' from Valkey...")
         client = await GlideClusterClient.create(config)
-        value = await client.get(config_key)
 
-        if value:
-            return value.decode("utf-8") if isinstance(value, bytes) else str(value)
-        else:
+        value = await client.get(config_key)
+        if value is None:
             return None
+
+        if isinstance(value, bytes):
+            return value.decode("utf-8")
+        return str(value)
     except (TimeoutError, RequestError, ConnectionError, ClosingError) as e:
-        logger.error(f"Valkey error during GET: {e}")
+        logger.error(f"Valkey GET error: {e}")
         return None
     finally:
         if client:
@@ -80,23 +82,20 @@ async def get_from_valkey(config_key: str):
                 await client.close()
                 logger.info("Closed Valkey client after GET")
             except ClosingError as e:
-                logger.error(f"Error closing Valkey client: {e}")
+                logger.error(f"Error closing client: {e}")
 
-# -------------------- Lambda Handler -------------------- #
+# ------------------- Lambda Handler ------------------- #
 
 def lambda_handler(event, context):
     try:
         method = event["httpMethod"]
 
-        # ------------- POST (Create New Key) -------------
         if method == "POST":
             return handle_store_or_update(event, action="create")
 
-        # ------------- PATCH (Update Existing Key) -------------
         elif method == "PATCH":
             return handle_store_or_update(event, action="update")
 
-        # ------------- GET (Fetch by Key) -------------
         elif method == "GET":
             query = event.get("queryStringParameters", {})
             config_key = query.get("config_key")
@@ -109,7 +108,7 @@ def lambda_handler(event, context):
 
             config_value_str = asyncio.run(get_from_valkey(config_key))
 
-            if not config_value_str:
+            if config_value_str is None or config_value_str.strip() == "":
                 return {
                     "statusCode": 404,
                     "body": json.dumps({"message": f"Key '{config_key}' not found in Valkey"})
@@ -118,8 +117,8 @@ def lambda_handler(event, context):
             try:
                 config_value_obj = json.loads(config_value_str)
             except Exception as e:
-                logger.warning(f"Could not parse value as JSON: {e}")
-                config_value_obj = config_value_str
+                logger.warning(f"Failed to parse value as JSON: {e}")
+                config_value_obj = config_value_str  # Fallback to raw string
 
             return {
                 "statusCode": 200,
@@ -129,7 +128,6 @@ def lambda_handler(event, context):
                 })
             }
 
-        # ------------- Unsupported Method -------------
         else:
             return {
                 "statusCode": 405,
@@ -143,7 +141,7 @@ def lambda_handler(event, context):
             "body": json.dumps({"message": str(e)})
         }
 
-# -------------------- Shared Handler -------------------- #
+# ------------------- Shared POST/PATCH Handler ------------------- #
 
 def handle_store_or_update(event, action="create"):
     body = json.loads(event.get("body", "{}"))
@@ -157,7 +155,7 @@ def handle_store_or_update(event, action="create"):
             "body": json.dumps({"message": "Missing or malformed 'config_key' or 'config_value'"})
         }
 
-    # Flatten DynamoDB-like structure
+    # Flatten the DynamoDB-style input into a simple dictionary
     flat_value = {k: v.get("S") for k, v in config_value_map.items()}
     config_value_str = json.dumps(flat_value)
 
